@@ -25,9 +25,14 @@ class ParkingController(Node):
         self.create_subscription(ConeLocation, "/relative_cone", 
             self.relative_cone_callback, 1)
 
-        self.parking_distance = .75 # meters; try playing with this number!
+        self.parking_distance = 5 # meters; try playing with this number!
         self.relative_x = 0
         self.relative_y = 0
+
+        self.kp_drive = 21.25
+        self.kp_angle = .3
+
+        self.stuck = False
 
         self.get_logger().info("Parking Controller Initialized")
 
@@ -42,11 +47,43 @@ class ParkingController(Node):
         # Use relative position and your control law to set drive_cmd
 
         #################################
+        #gets distance from cone
+        distance_from_cone = np.linalg.norm([self.relative_x, self.relative_y])
+
+        #gets relative angle from cone
+        cone_angle = np.arctan2(self.relative_y, self.relative_x)
+
+        car_speed = 0.0
+        
+        distance_error = distance_from_cone - self.parking_distance
+
+        if distance_error != 0 or cone_angle != 0:
+            cone_angle = (1 if distance_error > 0 else -1) * self.kp_angle * cone_angle
+            car_speed = self.kp_drive * distance_error
+
+        if self.stuck or (car_speed < .5 and np.absolute(cone_angle) > 0.01):
+            self.stuck = True
+            car_speed = -1.0
+            cone_angle = -1 * self.kp_angle * cone_angle
+
+        if self.stuck and np.absolute(cone_angle) < .02:
+            self.stuck = False
+            car_speed = self.kp_drive * distance_error
+            cone_angle = (1 if distance_error > 0 else -1) * self.kp_angle * cone_angle
+
+        car_speed = np.clip(car_speed, -1.0, 1.0) if np.absolute(car_speed) >= .25 else 0.0
+
+        drive_cmd.header.frame_id = 'base_link'
+        drive_cmd.drive.speed = car_speed
+        drive_cmd.drive.steering_angle = cone_angle
+
+        self.get_logger().info(f"car_speed: {drive_cmd.drive.speed}")
+        self.get_logger().info(f"car_angle: {drive_cmd.drive.steering_angle}")
 
         self.drive_pub.publish(drive_cmd)
-        self.error_publisher()
+        self.error_publisher(self.relative_x, self.relative_y, distance_error, distance_from_cone)
 
-    def error_publisher(self):
+    def error_publisher(self, relative_x, relative_y, distance_e, distance_from_cone):
         """
         Publish the error between the car and the cone. We will view this
         with rqt_plot to plot the success of the controller
@@ -59,6 +96,9 @@ class ParkingController(Node):
         # Populate error_msg with relative_x, relative_y, sqrt(x^2+y^2)
 
         #################################
+        error_msg.x_error = distance_e * relative_x / distance_from_cone
+        error_msg.y_error = distance_e * relative_y / distance_from_cone
+        error_msg.distance_error = distance_e
         
         self.error_pub.publish(error_msg)
 
